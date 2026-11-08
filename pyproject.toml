@@ -1,0 +1,31 @@
+[project]
+name = "isp-support-agent"
+version = "0.1.0"
+description = "L1 support agent for a fictional ISP (FiberLab): LangGraph + MCP + Amazon Bedrock, security-first."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.24,<2",  # langchain-mcp-adapters requires MCP 1.x
+    "langgraph>=1.2",
+    "langchain-aws>=1.9",
+    "langchain-mcp-adapters>=0.3",
+    "langsmith>=0.14",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+fiberlab-mcp = "fiberlab.mcp_server:main"
+fiberlab-chat = "fiberlab.agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
