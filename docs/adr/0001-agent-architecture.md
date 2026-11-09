@@ -76,7 +76,7 @@ Stage 2 by comparing eval results and cost.
 ### 4. Knowledge: RAG over a synthetic FiberLab knowledge base
 
 Markdown troubleshooting guides (router restart, WiFi channel, cable checks, speed
-test). Local vector store for development; managed option evaluated in Stage 6.
+test). Local vector store for development; managed option evaluated in Stage 7.
 
 ### 5. Observability and evaluation: LangSmith
 
@@ -85,7 +85,7 @@ expected decision (solve / escalate) drives evals.
 
 ### 6. Interface and language
 
-Console first, web UI later (Stage 6). Conversations in **Spanish**; code, docs and
+Console first, web UI later (Stage 7). Conversations in **Spanish**; code, docs and
 commit messages in **English**.
 
 ## Consequences
@@ -121,4 +121,4 @@ commit messages in **English**.
 ## Open questions
 
 - Whether Haiku 5.5 is accurate enough, or a larger model is needed (Stage 4 evals).
-- Vector store choice for Stage 6 deployment.
+- Vector store choice for Stage 7 deployment.

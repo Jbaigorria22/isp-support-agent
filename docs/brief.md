@@ -56,5 +56,6 @@ invented, so the repository can be public.
 | 2 | LangGraph agent running in the console |
 | 3 | RAG over the FiberLab troubleshooting knowledge base |
 | 4 | Evaluation set + LangSmith tracing and evals |
-| 5 | Guardrails + security tests (prompt injection, PII) |
-| 6 | Web UI + AWS deployment with Terraform |
+| 5 | Observability: OpenTelemetry + Prometheus + Grafana |
+| 6 | Guardrails + security tests (prompt injection, PII) |
+| 7 | Web UI + AWS deployment with Terraform |
