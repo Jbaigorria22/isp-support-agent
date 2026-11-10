@@ -58,7 +58,7 @@ class BedrockBrain:
         from langchain_aws import ChatBedrockConverse
 
         self.llm = ChatBedrockConverse(
-            model=model_id or os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
+            model=model_id or os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
             region_name=region or os.environ.get("AWS_REGION", "us-east-1"),
             max_tokens=600,
         )

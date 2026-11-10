@@ -114,9 +114,12 @@ commit messages in **English**.
 - **`Brain` interface** with two implementations: `BedrockBrain` (real model) and
   `RuleBrain` (deterministic, used by tests). End-to-end tests run the real graph and
   the real MCP server at zero cost.
-- **Model:** `anthropic.claude-haiku-5-5` (cheapest current model with tool use and
-  structured output), configurable with `BEDROCK_MODEL_ID`. It does not accept a
-  `temperature` parameter, so none is set.
+- **Model:** `us.anthropic.claude-haiku-4-5-20251001-v1:0`, called through a **US
+  cross-Region inference profile** (keeps processing in US Regions). Haiku 5.5 was
+  the first choice but is not enabled for this account (`AccessDenied`), and Haiku
+  4.5 cannot be called on-demand without a profile (`ValidationException`).
+  `python -m fiberlab.agent.check_bedrock --scan` finds which models an account can
+  use. Switching models is one line in `.env` (`BEDROCK_MODEL_ID`), no code change.
 
 ## Open questions
 
