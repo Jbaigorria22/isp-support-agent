@@ -86,6 +86,17 @@ def test_c1004_line_delivers_plan_so_problem_is_wifi():
     token = login("C1004", "268")
     history = tools.get_speed_history(token)
     assert history["line_delivers_plan"] is True
+    assert history["trend"] == "stable"
+
+
+def test_c1003_average_looks_fine_but_today_is_degraded():
+    """Regression: the 7-day average (257.6 Mbps) passed the 80% check while today was 150 Mbps."""
+    token = login("C1003", "905")
+    history = tools.get_speed_history(token)
+    assert history["avg_down_mbps"] >= 0.8 * history["plan_mbps"]  # the misleading number
+    assert history["latest_down_mbps"] == 150
+    assert history["line_delivers_plan"] is False
+    assert history["trend"] == "degrading"
 
 
 def test_c1006_restart_does_not_fix():

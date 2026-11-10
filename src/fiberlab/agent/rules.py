@@ -39,8 +39,11 @@ def decide(intent: str, facts: dict, already_restarted: bool = False) -> Decisio
 
     if intent == "slow_internet":
         speeds = facts.get("speeds", {})
-        if speeds.get("line_delivers_plan"):
+        if speeds.get("line_delivers_plan") and speeds.get("trend") != "degrading":
             return Decision(GUIDE, "line delivers the plan speed: the bottleneck is inside the home (WiFi/devices)")
+        if speeds.get("trend") == "degrading":
+            return Decision(ESCALATE, f"line speed degrading: {speeds.get('latest_down_mbps')} Mbps today "
+                                      f"vs. plan {speeds.get('plan_mbps')} Mbps")
         return Decision(ESCALATE, "line does not deliver the plan speed")
 
     return Decision(GUIDE, "no fault detected on the line: guide the customer through home checks")

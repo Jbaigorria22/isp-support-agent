@@ -18,6 +18,11 @@ from fiberlab.auth import AuthError, issue_token, verify_token
 RX_POWER_MIN_DBM = -27.0
 RX_POWER_MAX_DBM = -8.0
 
+# Line is "OK" if today's wired speed reaches 80% of the plan.
+LINE_OK_RATIO = 0.8
+# A change of 15% or more vs. the previous days counts as a trend.
+TREND_THRESHOLD = 0.15
+
 MAX_FAILED_ATTEMPTS = 3
 LOCKOUT_MINUTES = 15
 
@@ -136,15 +141,36 @@ def get_speed_history(session_token: str, days: int = 7) -> dict:
         ).fetchall()
 
     tests = [dict(r) for r in rows]
-    avg_down = round(sum(t["down_mbps"] for t in tests) / len(tests), 1) if tests else None
+    if not tests:
+        return {"ok": True, "plan_mbps": plan, "tests": [], "line_delivers_plan": None, "trend": "unknown"}
+
+    latest_down = tests[0]["down_mbps"]  # day_offset 0 = today
+    avg_down = round(sum(t["down_mbps"] for t in tests) / len(tests), 1)
     return {
         "ok": True,
         "plan_mbps": plan,
         "measured_at": "ONT (wired, before the customer's WiFi)",
         "tests": tests,
+        "latest_down_mbps": latest_down,
         "avg_down_mbps": avg_down,
-        "line_delivers_plan": avg_down is not None and avg_down >= 0.8 * plan,
+        # Decide on TODAY's measurement: an average hides a line that is degrading.
+        "line_delivers_plan": latest_down >= LINE_OK_RATIO * plan,
+        "trend": _trend(tests),
     }
+
+
+def _trend(tests: list[dict]) -> str:
+    """Compare today's speed with the average of the previous days."""
+    if len(tests) < 2:
+        return "unknown"
+    previous = [t["down_mbps"] for t in tests[1:]]
+    baseline = sum(previous) / len(previous)
+    change = (tests[0]["down_mbps"] - baseline) / baseline
+    if change <= -TREND_THRESHOLD:
+        return "degrading"
+    if change >= TREND_THRESHOLD:
+        return "improving"
+    return "stable"
 
 
 def restart_modem(session_token: str) -> dict:
