@@ -98,3 +98,44 @@ def test_injection_cannot_touch_another_customer(fresh_db):
     with sqlite3.connect(fresh_db) as conn:
         uptime = conn.execute("SELECT status FROM modems WHERE customer_id='C1006'").fetchone()[0]
     assert uptime == "offline"  # untouched: tools only act on the verified customer's token
+
+
+# --------------------------------------------------------------------------- #
+# Stage 3: health score, knowledge-base guides and WiFi password change
+# --------------------------------------------------------------------------- #
+
+def test_c1007_red_health_escalates_without_wasting_the_customers_time():
+    state, _, calls = converse(["C1007 774", "se me corta internet a cada rato"])
+    assert state["intent"] == "intermittent"
+    assert "get_line_health" in calls
+    assert state["outcome"] == "escalate" and "health score" in state["reason"]
+    assert state.get("guides_used", []) == []
+
+
+def test_guidance_comes_from_the_matching_knowledge_base_guide():
+    state, prompts, _ = converse(["C1005 551", "mi celular no ve la red wifi en la lista", "si"])
+    assert state["guides_used"] == ["wf-01"]
+    assert "luz de WiFi" in prompts[-1]
+
+
+def test_second_attempt_uses_a_different_guide():
+    state, _, _ = converse(["C1005 551", "el wifi se corta en la habitación", "no", "no"])
+    assert len(set(state["guides_used"])) == 2
+
+
+def test_wifi_password_change_happy_path_keeps_the_secret_out_of_the_transcript():
+    state, prompts, calls = converse(["C1005 551", "quiero cambiar la clave del wifi", "si", "MiClaveNueva2026"])
+    assert "FiberLab-1005" in prompts[2] and "desconectar" in prompts[2]
+    assert state["outcome"] == "solved" and "change_wifi_password" in calls
+    assert "MiClaveNueva2026" not in str(state)  # not in transcript, last_reply or anywhere in state
+
+
+def test_wifi_password_change_needs_consent():
+    state, _, calls = converse(["C1005 551", "quiero cambiar la contraseña del wifi", "no"])
+    assert state["outcome"] == "cancelled" and "change_wifi_password" not in calls
+
+
+def test_weak_wifi_password_is_rejected_then_a_good_one_works():
+    state, prompts, calls = converse(["C1005 551", "cambiar clave wifi", "si", "corta1", "OtraClave2026"])
+    assert "menos de 10" in prompts[-1]
+    assert state["outcome"] == "solved" and calls.count("change_wifi_password") == 2

@@ -7,6 +7,7 @@ Rules enforced here (in code, not in the prompt):
   - After MAX_FAILED_ATTEMPTS wrong answers, verification is locked for a while.
 """
 
+import hashlib
 import os
 import sqlite3
 from contextlib import closing
@@ -23,10 +24,14 @@ LINE_OK_RATIO = 0.8
 # A change of 15% or more vs. the previous days counts as a trend.
 TREND_THRESHOLD = 0.15
 
+# Line Health Score (ADR-0002): 0-100, green from this value up.
+HEALTH_GREEN_MIN = 75
+HEALTH_WEIGHTS = {"signal": 35, "errors": 25, "stability": 20, "speed": 20}
+
 MAX_FAILED_ATTEMPTS = 3
 LOCKOUT_MINUTES = 15
 
-VALID_CATEGORIES = {"no_service", "slow_internet", "wifi", "out_of_scope", "outage"}
+VALID_CATEGORIES = {"no_service", "slow_internet", "wifi", "intermittent", "out_of_scope", "outage"}
 VALID_PRIORITIES = {"low", "medium", "high"}
 
 
@@ -220,3 +225,128 @@ def create_ticket(session_token: str, category: str, priority: str, summary: str
         ticket_id = cursor.lastrowid
 
     return {"ok": True, "ticket_id": f"TCK-{ticket_id:05d}", "category": category, "priority": priority}
+
+
+# --------------------------------------------------------------------------- #
+# Line Health Score (FiberLab's own formula, see ADR-0002)
+# --------------------------------------------------------------------------- #
+
+def _health_components(rx: float, fec_errors: int, drops: int, speed_ratio: float | None) -> dict:
+    """Score each component from 0 to its weight. Higher is healthier."""
+    w = HEALTH_WEIGHTS
+
+    # Optical signal: full points in the comfortable band, fading to 0 at the range limit.
+    if rx > RX_POWER_MAX_DBM or rx < RX_POWER_MIN_DBM:
+        signal = 0.0
+    elif rx >= -24.0:
+        signal = float(w["signal"])
+    else:  # marginal zone between -24 and -27 dBm
+        signal = 15 + (w["signal"] - 15) * (rx - RX_POWER_MIN_DBM) / (-24.0 - RX_POWER_MIN_DBM)
+
+    # Uncorrected FEC errors in 24 h: up to 50 is normal, 2000 or more scores 0.
+    errors = w["errors"] * max(0.0, min(1.0, (2000 - fec_errors) / (2000 - 50)))
+
+    # Stability: each connection drop in 7 days costs 4 points.
+    stability = max(0.0, w["stability"] - 4.0 * drops)
+
+    # Speed: today's wired speed vs. the plan. Neutral (half) when there is no test.
+    speed = w["speed"] * (min(1.0, speed_ratio) if speed_ratio is not None else 0.5)
+
+    return {k: round(v, 1) for k, v in
+            {"signal": signal, "errors": errors, "stability": stability, "speed": speed}.items()}
+
+
+def get_line_health(session_token: str) -> dict:
+    """0-100 score that summarizes the line: green = home checks, red = technician."""
+    try:
+        customer_id = _customer_from_token(session_token)
+    except AuthError as exc:
+        return _error(str(exc))
+
+    with closing(_connect()) as conn:
+        modem = conn.execute(
+            "SELECT status, rx_power_dbm, fec_errors_24h, drops_7d FROM modems WHERE customer_id = ?",
+            (customer_id,),
+        ).fetchone()
+        plan = conn.execute("SELECT plan_mbps FROM customers WHERE customer_id = ?", (customer_id,)).fetchone()[0]
+        latest = conn.execute(
+            "SELECT down_mbps FROM speed_tests WHERE customer_id = ? AND day_offset = 0", (customer_id,)
+        ).fetchone()
+
+    if modem["status"] != "online" or modem["rx_power_dbm"] is None:
+        return {"ok": True, "status": "unknown", "score": None, "reason": "ONT offline: the line cannot be measured"}
+
+    components = _health_components(
+        modem["rx_power_dbm"], modem["fec_errors_24h"], modem["drops_7d"], latest[0] / plan if latest else None
+    )
+    score = round(sum(components.values()))
+    weakest = min(components, key=lambda k: components[k] / HEALTH_WEIGHTS[k])
+    return {
+        "ok": True,
+        "score": score,
+        "status": "green" if score >= HEALTH_GREEN_MIN else "red",
+        "green_from": HEALTH_GREEN_MIN,
+        "components": components,
+        "max_per_component": HEALTH_WEIGHTS,
+        "weakest": weakest,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# WiFi tools
+# --------------------------------------------------------------------------- #
+
+def get_wifi_info(session_token: str) -> dict:
+    """Network name and connected devices. Never returns the password."""
+    try:
+        customer_id = _customer_from_token(session_token)
+    except AuthError as exc:
+        return _error(str(exc))
+
+    with closing(_connect()) as conn:
+        ssid = conn.execute("SELECT ssid FROM wifi WHERE customer_id = ?", (customer_id,)).fetchone()[0]
+        devices = conn.execute(
+            "SELECT name, band FROM wifi_devices WHERE customer_id = ?", (customer_id,)
+        ).fetchall()
+    return {"ok": True, "ssid": ssid, "devices": [dict(d) for d in devices], "device_count": len(devices)}
+
+
+def _password_problem(password: str, ssid: str) -> str | None:
+    if len(password) < 10:
+        return "too_short"
+    if len(password) > 63:
+        return "too_long"
+    if any(c.isspace() for c in password):
+        return "has_spaces"
+    if not (any(c.isalpha() for c in password) and any(c.isdigit() for c in password)):
+        return "needs_letter_and_digit"
+    if ssid.lower() in password.lower():
+        return "contains_network_name"
+    return None
+
+
+def change_wifi_password(session_token: str, new_password: str) -> dict:
+    """Change the WiFi password. Side effect: disconnects every device.
+
+    The password is validated, applied and stored only as a hash. It is never
+    returned, logged or included in error messages.
+    """
+    try:
+        customer_id = _customer_from_token(session_token)
+    except AuthError as exc:
+        return _error(str(exc))
+
+    with closing(_connect()) as conn:
+        ssid = conn.execute("SELECT ssid FROM wifi WHERE customer_id = ?", (customer_id,)).fetchone()[0]
+        problem = _password_problem(new_password, ssid)
+        if problem:
+            return {"ok": False, "error": "password rejected", "code": problem}
+
+        digest = hashlib.sha256(f"{customer_id}:{new_password}".encode()).hexdigest()
+        conn.execute("UPDATE wifi SET password_hash = ? WHERE customer_id = ?", (digest, customer_id))
+        disconnected = conn.execute(
+            "SELECT COUNT(*) FROM wifi_devices WHERE customer_id = ?", (customer_id,)
+        ).fetchone()[0]
+        conn.commit()
+
+    return {"ok": True, "ssid": ssid, "devices_disconnected": disconnected}

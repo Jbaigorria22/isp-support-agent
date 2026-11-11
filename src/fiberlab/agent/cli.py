@@ -13,13 +13,14 @@ from langgraph.types import Command
 
 from fiberlab.agent.brain import BedrockBrain, RuleBrain
 from fiberlab.agent.graph import build_graph
+from fiberlab.agent.retrieval import build_retriever
 from fiberlab.agent.toolbox import Toolbox
 
 
 async def chat(offline: bool) -> None:
     brain = RuleBrain() if offline else BedrockBrain()
     async with Toolbox.open() as toolbox:
-        graph = build_graph(brain, toolbox)
+        graph = build_graph(brain, toolbox, build_retriever(offline))
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
 
         result = await graph.ainvoke({}, config)
@@ -29,7 +30,8 @@ async def chat(offline: bool) -> None:
             result = await graph.ainvoke(Command(resume=reply), config)
 
         print(f"\n🤖 FiberLab: {result['final_message']}")
-        print(f"\n[outcome={result.get('outcome')} ticket={result.get('ticket_id', '-')} tools={toolbox.calls}]")
+        print(f"\n[outcome={result.get('outcome')} ticket={result.get('ticket_id', '-')} "
+              f"guides={result.get('guides_used', [])} tools={toolbox.calls}]")
 
 
 def main() -> None:

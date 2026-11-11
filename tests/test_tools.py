@@ -119,3 +119,46 @@ def test_create_ticket_validates_input():
     )
     assert ticket["ok"]
     assert ticket["ticket_id"].startswith("TCK-")
+
+
+# --------------------------------------------------------------------------- #
+# Line Health Score and WiFi tools (ADR-0002)
+# --------------------------------------------------------------------------- #
+
+def test_health_green_for_a_healthy_line():
+    health = tools.get_line_health(login("C1005", "551"))
+    assert health["status"] == "green" and health["score"] >= 95
+
+
+def test_health_red_for_an_unstable_line_names_the_weakest_component():
+    health = tools.get_line_health(login("C1007", "774"))
+    assert health["status"] == "red"
+    assert health["weakest"] == "stability"
+
+
+def test_health_unknown_when_ont_is_offline():
+    assert tools.get_line_health(login("C1006", "319"))["status"] == "unknown"
+
+
+def test_wifi_info_never_exposes_the_password():
+    info = tools.get_wifi_info(login("C1005", "551"))
+    assert info["ssid"] == "FiberLab-1005" and info["device_count"] == 3
+    assert "password" not in str(info).lower()
+
+
+def test_change_wifi_password_enforces_policy_and_never_echoes_it(fresh_db):
+    import sqlite3
+
+    token = login("C1005", "551")
+    for weak, code in [("corta1", "too_short"), ("sololetrasss", "needs_letter_and_digit"),
+                       ("con espacios 123", "has_spaces"), ("FiberLab-1005abc", "contains_network_name")]:
+        result = tools.change_wifi_password(token, weak)
+        assert result["code"] == code and weak not in str(result)
+
+    result = tools.change_wifi_password(token, "MiClaveNueva2026")
+    assert result["ok"] and "MiClaveNueva2026" not in str(result)
+    with sqlite3.connect(fresh_db) as conn:
+        stored = conn.execute("SELECT password_hash FROM wifi WHERE customer_id='C1005'").fetchone()[0]
+    assert stored != "MiClaveNueva2026" and len(stored) == 64  # only a hash is stored
+
+    assert not tools.change_wifi_password("forged", "MiClaveNueva2026")["ok"]

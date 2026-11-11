@@ -16,16 +16,15 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from fiberlab.agent.knowledge import steps_for
 
-Intent = Literal["no_service", "slow_internet", "wifi", "out_of_scope"]
+Intent = Literal["no_service", "slow_internet", "intermittent", "wifi", "wifi_password", "out_of_scope"]
 
 
 class Brain(Protocol):
     def extract_identity(self, text: str) -> dict: ...
     def classify_intent(self, text: str) -> str: ...
     def is_affirmative(self, text: str) -> bool: ...
-    def write_guidance(self, intent: str, facts: dict, attempt: int) -> str: ...
+    def write_guidance(self, problem: str, guide) -> str: ...
     def write_ticket_summary(self, context: dict) -> str: ...
 
 
@@ -78,19 +77,23 @@ class BedrockBrain:
         return self._structured(
             IntentResult,
             "Classify the problem: no_service (no internet at all), slow_internet, "
-            "wifi (coverage, drops, password), out_of_scope (billing, plans, anything non-technical).",
+            "intermittent (service drops and comes back), wifi (cannot see or join the network, coverage), "
+            "wifi_password (wants to CHANGE the WiFi password), "
+            "out_of_scope (billing, plans, TV, anything non-technical).",
             text,
         ).intent
 
     def is_affirmative(self, text: str) -> bool:
         return self._structured(YesNo, "Did the customer answer yes / agree / confirm it is solved?", text).affirmative
 
-    def write_guidance(self, intent: str, facts: dict, attempt: int) -> str:
-        steps = "\n".join(f"- {s}" for s in steps_for(intent, attempt))
+    def write_guidance(self, problem: str, guide) -> str:
+        steps = "\n".join(f"- {step}" for step in guide.steps)
         reply = self.llm.invoke([
             ("system", f"{SYSTEM}\n\nWrite in Argentine Spanish, friendly and brief (max 120 words). "
-                       "Explain the steps as a numbered list. Use ONLY the provided steps; do not invent procedures."),
-            ("human", f"Problem: {intent}\nDiagnostic facts: {facts}\nApproved steps:\n{steps}"),
+                       "Explain the steps as a numbered list, adapted to what the customer described. "
+                       "Use ONLY the approved steps from the knowledge-base guide; do not invent procedures."),
+            ("human", f"<customer_message>\n{problem}\n</customer_message>\n"
+                      f"Guide {guide.id}: {guide.title}\nApproved steps:\n{steps}"),
         ])
         return reply.content if isinstance(reply.content, str) else reply.text()
 
@@ -120,17 +123,21 @@ class RuleBrain:
         t = text.lower()
         if any(w in t for w in ("factura", "pago", "plan", "precio", "cobr")):
             return "out_of_scope"
-        if "wifi" in t or "señal" in t or "contraseña" in t:
+        if "cambiar" in t and ("clave" in t or "contraseña" in t):
+            return "wifi_password"
+        if "wifi" in t or "señal" in t or "contraseña" in t or "la red" in t:
             return "wifi"
         if "lento" in t or "lenta" in t or "velocidad" in t:
             return "slow_internet"
+        if "corta" in t or "intermit" in t or "microcorte" in t:
+            return "intermittent"
         return "no_service"
 
     def is_affirmative(self, text: str) -> bool:
         return text.strip().lower().startswith(("si", "sí", "dale", "ok", "listo", "ya anda", "yes", "s"))
 
-    def write_guidance(self, intent: str, facts: dict, attempt: int) -> str:
-        return "Probemos esto:\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(steps_for(intent, attempt), 1))
+    def write_guidance(self, problem: str, guide) -> str:
+        return "Probemos esto:\n" + "\n".join(f"{i}. {step}" for i, step in enumerate(guide.steps, 1))
 
     def write_ticket_summary(self, context: dict) -> str:
         return (

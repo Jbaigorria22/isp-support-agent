@@ -37,6 +37,11 @@ def decide(intent: str, facts: dict, already_restarted: bool = False) -> Decisio
     if modem and not modem.get("signal_in_range", True):
         return Decision(ESCALATE, f"optical signal out of range ({modem.get('rx_power_dbm')} dBm)")
 
+    health = facts.get("health", {})
+    if health.get("status") == "red":
+        return Decision(ESCALATE, f"line health score {health.get('score')}/100 "
+                                  f"(weakest component: {health.get('weakest')})")
+
     if intent == "slow_internet":
         speeds = facts.get("speeds", {})
         if speeds.get("line_delivers_plan") and speeds.get("trend") != "degrading":

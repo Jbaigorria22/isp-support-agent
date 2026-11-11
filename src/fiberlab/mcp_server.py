@@ -59,6 +59,27 @@ def create_ticket(session_token: str, category: str, priority: str, summary: str
     return tools.create_ticket(session_token, category, priority, summary, steps_tried)
 
 
+@mcp.tool()
+def get_line_health(session_token: str) -> dict:
+    """Get the Line Health Score (0-100) of the verified customer's line.
+
+    green = solvable with home checks; red = needs a technician.
+    """
+    return tools.get_line_health(session_token)
+
+
+@mcp.tool()
+def get_wifi_info(session_token: str) -> dict:
+    """Get the WiFi network name and connected devices. Never returns the password."""
+    return tools.get_wifi_info(session_token)
+
+
+@mcp.tool()
+def change_wifi_password(session_token: str, new_password: str) -> dict:
+    """Change the WiFi password. Disconnects all devices. Only after the customer agreed."""
+    return tools.change_wifi_password(session_token, new_password)
+
+
 def main() -> None:
     mcp.run()
 

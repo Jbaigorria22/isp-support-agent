@@ -16,9 +16,23 @@ from langgraph.types import interrupt
 
 from fiberlab.agent import rules
 from fiberlab.agent.brain import Brain
+from fiberlab.agent.retrieval import Retriever
 from fiberlab.agent.toolbox import Toolbox
 
 MAX_VERIFY_ATTEMPTS = 3
+MAX_WIFI_PASSWORD_ATTEMPTS = 3
+
+OFFER_WIFI_CHANGE = "offer_wifi_change"
+AWAIT_WIFI_PASSWORD = "await_wifi_password"
+CANCELLED = "cancelled"
+
+PASSWORD_PROBLEMS = {
+    "too_short": "tiene menos de 10 caracteres",
+    "too_long": "tiene más de 63 caracteres",
+    "has_spaces": "tiene espacios",
+    "needs_letter_and_digit": "necesita letras y números",
+    "contains_network_name": "no puede contener el nombre de la red",
+}
 
 GREETING = (
     "¡Hola! Soy el asistente técnico de FiberLab. Para ayudarte necesito tu número "
@@ -43,17 +57,22 @@ class State(TypedDict, total=False):
     restarted: bool
     guide_attempts: int
     guidance: str
+    guides_used: Annotated[list[str], operator.add]  # knowledge-base guide IDs, for audit
+    wifi_attempts: int
     steps_tried: Annotated[list[str], operator.add]
     ticket_id: str
     final_message: str
 
 
-def build_graph(brain: Brain, toolbox: Toolbox, checkpointer=None):
+def build_graph(brain: Brain, toolbox: Toolbox, retriever: Retriever | None = None, checkpointer=None):
+    retriever = retriever or Retriever()
     # ----- waiting nodes (interrupt only) ---------------------------------- #
 
     def ask(state: State) -> State:
         reply = interrupt({"say": state["prompt"]})
-        return {"last_reply": reply, "transcript": [f"agent: {state['prompt']}", f"customer: {reply}"]}
+        # A new WiFi password is a secret: it never enters the transcript.
+        shown = "[redacted]" if state.get("outcome") == AWAIT_WIFI_PASSWORD else reply
+        return {"last_reply": reply, "transcript": [f"agent: {state['prompt']}", f"customer: {shown}"]}
 
     # ----- working nodes --------------------------------------------------- #
 
@@ -93,6 +112,8 @@ def build_graph(brain: Brain, toolbox: Toolbox, checkpointer=None):
         outages = await toolbox.call("get_area_outages", zone=state["zone"])
         modem = await toolbox.call("get_modem_status", session_token=token)
         facts = {"outages": outages.get("active_outages", []), "modem": modem}
+        if modem.get("status") == "online":
+            facts["health"] = await toolbox.call("get_line_health", session_token=token)
         if state["intent"] == "slow_internet":
             facts["speeds"] = await toolbox.call("get_speed_history", session_token=token, days=7)
         decision = rules.decide(state["intent"], facts)
@@ -114,13 +135,20 @@ def build_graph(brain: Brain, toolbox: Toolbox, checkpointer=None):
                 "outcome": decision.outcome, "reason": decision.reason}
 
     def guide(state: State) -> State:
-        attempt = state.get("guide_attempts", 0)
-        text = brain.write_guidance(state["intent"], state.get("facts", {}), attempt)
-        return {"guidance": text, "prompt": f"{text}\n\n¿Se resolvió el problema?"}
+        health = state.get("facts", {}).get("health", {}).get("status")
+        found = retriever.search(
+            problem=state["intent"], health=health if health in ("green", "red") else "green",
+            query=state.get("problem", ""), k=1, exclude=state.get("guides_used", []),
+        )
+        if not found:
+            return {"outcome": rules.ESCALATE, "reason": "no remaining knowledge-base guide for this problem"}
+        text = brain.write_guidance(state.get("problem", ""), found[0])
+        return {"guidance": text, "guides_used": [found[0].id], "outcome": rules.GUIDE,
+                "prompt": f"{text}\n\n¿Se resolvió el problema?"}
 
     def check_resolved(state: State) -> State:
         attempts = state.get("guide_attempts", 0) + 1
-        tried = [f"guided home checks, attempt {attempts}"]
+        tried = [f"knowledge-base guide {state.get('guides_used', ['?'])[-1]} (attempt {attempts})"]
         if brain.is_affirmative(state["last_reply"]):
             return {"guide_attempts": attempts, "steps_tried": tried, "outcome": "solved",
                     "final_message": "¡Genial! Me alegra que se haya resuelto. ¡Que tengas buen día!"}
@@ -152,6 +180,37 @@ def build_graph(brain: Brain, toolbox: Toolbox, checkpointer=None):
                        f"Ya tienen todo el diagnóstico, así que no vas a tener que repetir nada.")
         return {"ticket_id": ticket_id, "final_message": message}
 
+    async def wifi_offer(state: State) -> State:
+        info = await toolbox.call("get_wifi_info", session_token=state["session_token"])
+        return {"facts": {"wifi": info}, "outcome": OFFER_WIFI_CHANGE,
+                "prompt": f"Puedo cambiar la clave de tu red {info['ssid']}. Al hacerlo se van a desconectar "
+                          f"los {info['device_count']} dispositivos conectados y vas a tener que volver a "
+                          f"conectarlos con la clave nueva. ¿Querés continuar?"}
+
+    def wifi_confirm(state: State) -> State:
+        if not brain.is_affirmative(state["last_reply"]):
+            return {"outcome": CANCELLED, "final_message": "Perfecto, no cambié nada. Tu clave sigue siendo la misma."}
+        return {"outcome": AWAIT_WIFI_PASSWORD, "wifi_attempts": 0,
+                "prompt": "Escribí la nueva clave: entre 10 y 63 caracteres, con letras y números, sin espacios."}
+
+    async def wifi_apply(state: State) -> State:
+        # The password goes straight from the customer to the tool: the LLM never sees it.
+        attempts = state.get("wifi_attempts", 0) + 1
+        result = await toolbox.call("change_wifi_password", session_token=state["session_token"],
+                                    new_password=state["last_reply"])
+        update: State = {"last_reply": "[redacted]", "wifi_attempts": attempts}
+        if result.get("ok"):
+            return update | {"outcome": "solved", "steps_tried": ["WiFi password changed"],
+                             "final_message": f"¡Listo! Cambié la clave de {result['ssid']}. "
+                                              f"Volvé a conectar tus dispositivos con la clave nueva."}
+        if attempts >= MAX_WIFI_PASSWORD_ATTEMPTS:
+            return update | {"outcome": CANCELLED,
+                             "final_message": "No pude aplicar una clave válida, así que no cambié nada. "
+                                              "Podés volver a intentarlo cuando quieras."}
+        problem = PASSWORD_PROBLEMS.get(result.get("code"), "no cumple los requisitos")
+        return update | {"prompt": f"Esa clave {problem}. Probá con otra: entre 10 y 63 caracteres, "
+                                   f"con letras y números, sin espacios."}
+
     def unverified(state: State) -> State:
         return {"outcome": "unverified",
                 "final_message": "No pude verificar tu identidad. Por seguridad, comunicate por nuestros canales oficiales."}
@@ -165,6 +224,10 @@ def build_graph(brain: Brain, toolbox: Toolbox, checkpointer=None):
             return "classify"
         if state.get("outcome") == rules.OFFER_RESTART:
             return "restart"
+        if state.get("outcome") == OFFER_WIFI_CHANGE:
+            return "wifi_confirm"
+        if state.get("outcome") == AWAIT_WIFI_PASSWORD:
+            return "wifi_apply"
         return "check_resolved"
 
     def after_verify(state: State) -> str:
@@ -179,25 +242,37 @@ def build_graph(brain: Brain, toolbox: Toolbox, checkpointer=None):
             rules.OFFER_RESTART: "offer_restart",
             rules.GUIDE: "guide",
             "solved": END,
+            CANCELLED: END,
         }[state["outcome"]]
+
+    def after_classify(state: State) -> str:
+        return {"out_of_scope": "escalate", "wifi_password": "wifi_offer"}.get(state["intent"], "diagnose")
+
+    def end_or_ask(state: State) -> str:
+        return END if state.get("outcome") in ("solved", CANCELLED) else "ask"
 
     g = StateGraph(State)
     for name, fn in [("start", start), ("ask", ask), ("verify", verify), ("classify", classify),
                      ("diagnose", diagnose), ("offer_restart", offer_restart), ("restart", restart),
                      ("guide", guide), ("check_resolved", check_resolved), ("escalate", escalate),
-                     ("unverified", unverified)]:
+                     ("unverified", unverified), ("wifi_offer", wifi_offer),
+                     ("wifi_confirm", wifi_confirm), ("wifi_apply", wifi_apply)]:
         g.add_node(name, fn)
 
     g.add_edge(START, "start")
     g.add_edge("start", "ask")
-    g.add_conditional_edges("ask", after_ask, ["verify", "classify", "restart", "check_resolved"])
+    g.add_conditional_edges("ask", after_ask,
+                            ["verify", "classify", "restart", "check_resolved", "wifi_confirm", "wifi_apply"])
     g.add_conditional_edges("verify", after_verify, ["ask", "unverified"])
-    g.add_conditional_edges("classify", lambda s: "escalate" if s["intent"] == "out_of_scope" else "diagnose",
-                            ["escalate", "diagnose"])
+    g.add_conditional_edges("classify", after_classify, ["escalate", "wifi_offer", "diagnose"])
+    g.add_edge("wifi_offer", "ask")
+    g.add_conditional_edges("wifi_confirm", end_or_ask, ["ask", END])
+    g.add_conditional_edges("wifi_apply", end_or_ask, ["ask", END])
     g.add_conditional_edges("diagnose", by_outcome, ["escalate", "offer_restart", "guide", END])
     g.add_edge("offer_restart", "ask")
     g.add_conditional_edges("restart", by_outcome, ["escalate", "guide", END])
-    g.add_edge("guide", "ask")
+    g.add_conditional_edges("guide", lambda s: "escalate" if s["outcome"] == rules.ESCALATE else "ask",
+                            ["escalate", "ask"])
     g.add_conditional_edges("check_resolved", by_outcome, ["escalate", "guide", END])
     g.add_edge("escalate", END)
     g.add_edge("unverified", END)
