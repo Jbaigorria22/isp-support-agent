@@ -76,10 +76,18 @@ class BedrockBrain:
     def classify_intent(self, text: str) -> str:
         return self._structured(
             IntentResult,
-            "Classify the problem: no_service (no internet at all), slow_internet, "
-            "intermittent (service drops and comes back), wifi (cannot see or join the network, coverage), "
-            "wifi_password (wants to CHANGE the WiFi password), "
-            "out_of_scope (billing, plans, TV, anything non-technical).",
+            "Classify the problem into one intent:\n"
+            "- no_service: no connectivity at all, on every device.\n"
+            "- slow_internet: there is connection, but slow everywhere in the home.\n"
+            "- intermittent: the service drops and comes back on its own.\n"
+            "- wifi: anything between the router and the customer's devices - cannot see the "
+            "network, authentication or password errors when joining, 'connected but no internet', "
+            "weak coverage in part of the home. Support experience: these are almost always WiFi "
+            "issues, not a line outage, even when the customer says 'no internet'.\n"
+            "- wifi_password: ONLY when the customer explicitly ASKS to change the password. "
+            "Reporting an authentication error is wifi, not wifi_password.\n"
+            "- out_of_scope: billing, plans, sales, moving home, cancellations, corporate "
+            "accounts - anything that is not residential internet technical support.",
             text,
         ).intent
 
