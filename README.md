@@ -67,6 +67,9 @@ start → ask → verify ─┬─► ask (problem) → classify → diagnose �
 | `get_modem_status` | Yes | – |
 | `get_speed_history` | Yes | – |
 | `restart_modem` | Yes | Restarts the ONT (after customer confirmation) |
+| `get_line_health` | Yes | – |
+| `get_wifi_info` | Yes | – |
+| `change_wifi_password` | Yes | Changes the password (after customer confirmation) |
 | `create_ticket` | Yes | Creates an L2 ticket |
 
 ## Project structure
@@ -122,6 +125,43 @@ Conversations are in **Spanish** (the target customers); code and docs are in En
 | C1004 | 268 | Line delivers plan, slow at home | WiFi guidance |
 | C1005 | 551 | Everything healthy | Guide / close |
 | C1006 | 319 | ONT offline, restart fails | Escalate |
+| C1007 | 774 | Unstable line (FEC errors + drops) | Escalate on red health score |
+
+## Evaluation
+
+Tests prove the code does what was written; they say nothing about whether the
+agent *decides* well. A separate evaluation measures that, on 30 cases written
+from real L1 support calls (`evals/intent_dataset.py`).
+
+Cases are split in two: **clear** ones, and **hard** ones where even a human
+agent could argue the label (mixed problems, misleading wording, vague
+descriptions). Mixing them would hide how the agent does on the ordinary cases.
+
+| Brain | Clear cases | Hard cases |
+|-------|-------------|------------|
+| `RuleBrain` (keyword rules, baseline) | 64% | 20% |
+| Claude Haiku 4.5, first prompt | 96% | 80% |
+| Claude Haiku 4.5, **after sharpening the intent definitions** | **100%** | 80% |
+
+The baseline is not decoration: it quantifies what the model actually adds, and
+exposed a *silent fallback* — when no keyword matched, `RuleBrain` answered
+`no_service` instead of "I don't know", so "I want to cancel my service" was
+routed to router troubleshooting.
+
+The last row is the eval loop paying off. Two failures (`wf-auth`,
+`wf-sin-internet`) were not model errors but **ambiguous intent definitions**.
+Encoding support domain knowledge into the prompt — *an authentication error is
+`wifi`, not a request to change the password*; *"connected but no internet" is
+almost always WiFi, not a line outage* — fixed both without breaking the other 28.
+
+```bash
+python -m evals.run_intent_eval --offline   # free baseline, no AWS
+python -m evals.run_intent_eval             # ~30 Bedrock calls, well under $0.01
+```
+
+Each run is saved to `evals/results/` so model and prompt changes can be compared
+over time. Five tests in `tests/test_eval_dataset.py` keep the dataset valid and
+in sync with the intents the agent actually supports.
 
 ## Security and credentials
 
@@ -137,8 +177,8 @@ Conversations are in **Spanish** (the target customers); code and docs are in En
 | 0 | [Brief](docs/brief.md) + [ADR-0001](docs/adr/0001-agent-architecture.md) | ✅ |
 | 1 | Simulated ISP backend + MCP server | ✅ |
 | 2 | LangGraph agent (console) | ✅ |
-| 3 | RAG knowledge base | ⏳ |
-| 4 | Evals + LangSmith | ⏳ |
+| 3 | [Tree-structured knowledge base + hybrid retrieval + Line Health Score](docs/adr/0002-knowledge-base-and-line-health.md) | ✅ |
+| 4 | Intent-classification evaluation | ✅ |
 | 5 | Observability: OpenTelemetry + Prometheus + Grafana | ⏳ |
 | 6 | Guardrails + security tests (prompt injection, PII) | ⏳ |
 | 7 | Web UI + AWS deployment (Terraform) | ⏳ |
