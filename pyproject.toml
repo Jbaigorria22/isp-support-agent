@@ -30,5 +30,5 @@ where = ["src"]
 fiberlab = ["knowledge_base/*.md"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
