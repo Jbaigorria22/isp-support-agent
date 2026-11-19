@@ -9,6 +9,7 @@ dependencies = [
     "langchain-aws>=1.9",
     "langchain-mcp-adapters>=0.3",
     "langsmith>=0.14",
+    "prometheus-client>=0.21",
     "python-dotenv>=1.0",
 ]
 
